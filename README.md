@@ -184,9 +184,9 @@ ktl (our in-progress BuildKit orchestrator) embeds nsjail by default on Linux: i
 
 ![ktl sandbox demo](media/ktl-sandbox-demo.gif)
 
-**Real project run (`/Users/antonkrylov/work/sites/energy-lab`, Linux host):**
+**Remote SSH build (Linux host, nsjail + BuildKit on the server):**
 
-![ktl energy-lab demo](media/ktl-nsjail-energy.gif)
+![ktl ssh sandboxed build](media/ktl-ssh-build.gif)
 
 ## CI recipes (copy/paste)
 ### GitHub Actions (self-hosted Linux runner)
