@@ -180,10 +180,9 @@ ktl is still evolving; today sandboxing is supported on Linux with nsjail instal
 
 ktl (our in-progress BuildKit orchestrator) embeds nsjail by default on Linux: it re-execs itself inside the sandbox, binds only the build context/cache/builder socket, and fails closed if nsjail or the policy is missing.
 
-**Local help + flags preview** (short clip):
+**Local help + flags preview:**
 
 ![ktl sandbox demo](media/ktl-sandbox-demo.gif)
-*Shows the CLI flags and sandbox help text without running a full build; good for orienting teammates.*
 
 **Remote SSH build (Linux host, nsjail + BuildKit on the server):**
 
