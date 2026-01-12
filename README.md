@@ -92,24 +92,6 @@ exec nsjail \
 ```
 If you set `clone_newnet: true`, point `ENDPOINT` at a TCP listener on an allowlisted address or a loopback rootless daemon.
 
-## Wrapper #3: nerdctl (containerd users)
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-POLICY=${POLICY_PATH:-$PWD/sandbox/linux-ci.cfg}
-CTX=${1:-.}; shift || true
-CACHE=${CACHE_DIR:-$HOME/.cache/buildkit}
-DAEMON=${DAEMON_SOCKET:-/run/containerd/containerd.sock}
-mkdir -p "$CACHE"
-exec nsjail \
-  --config "$POLICY" \
-  --bindmount "$PWD:/workspace" \
-  --bindmount "$CACHE:/bk-cache" \
-  --bindmount "$DAEMON:/run/containerd/containerd.sock" \
-  --cwd /workspace \
-  -- nerdctl build "$CTX" "$@"
-```
-
 ## Case study: ktl embeds this pattern
 The `ktl` CLI (BuildKit orchestrator) bakes the pattern in:
 - Flags: `--sandbox`, `--sandbox-config`, `--sandbox-bind`, `--sandbox-probe-path`, `--sandbox-logs`, `--hermetic` (`cmd/ktl/build.go`).
