@@ -118,6 +118,33 @@ The `ktl` CLI (BuildKit orchestrator) bakes the pattern in:
 - Demos: `scripts/sandbox-demo.sh` and `scripts/docker-vs-ktl-sandbox-demo.sh` show baseline vs sandboxed builds, allowlisting, and failure logging.
 Borrow the same structure for your own tool: flags to select policy/binds, re‑exec inside nsjail, and logging that fails closed.
 
+### Visual: request flow
+
+```mermaid
+flowchart LR
+  Dev["developer shell\n(docker/buildx/nerdctl/ktl)"] --> |wrapper script| J["nsjail\n(policy + binds)"]
+  J --> |binds /workspace| BK["BuildKit daemon\n(rootless or docker.sock)"]
+  BK --> |pull/push| Reg["registry"]
+  BK --> Img["image / cache output"]
+  J -. sandbox logs .-> Dev
+```
+
+### Visual: filesystem view inside nsjail
+
+```mermaid
+flowchart TB
+  subgraph NsJail "nsjail view (/)"
+    TMP["/tmp (tmpfs)"]
+    RUN["/run (tmpfs)"]
+    WS["/workspace (bind: host pwd)"]
+    CACHE["/bk-cache (bind: host cache)"]
+    DEV["/dev (bind)"]
+  end
+  Host["host FS"] -.hidden.-> NsJail
+  WS -.visible.-> Host
+  CACHE -.visible.-> Host
+```
+
 ### ktl code excerpts (Go)
 
 The CLI wiring in Go (simplified) shows all sandbox knobs exposed to users:
