@@ -118,6 +118,39 @@ The `ktl` CLI (BuildKit orchestrator) bakes the pattern in:
 - Demos: `scripts/sandbox-demo.sh` and `scripts/docker-vs-ktl-sandbox-demo.sh` show baseline vs sandboxed builds, allowlisting, and failure logging.
 Borrow the same structure for your own tool: flags to select policy/binds, re‑exec inside nsjail, and logging that fails closed.
 
+### ktl code excerpts (Go)
+
+The CLI wiring in Go (simplified) shows all sandbox knobs exposed to users:
+
+```go
+// cmd/ktl/build.go
+cmd.Flags().BoolVar(&opts.sandboxLogs, "sandbox-logs", false, "Stream sandbox runtime logs")
+cmd.PersistentFlags().StringVar(&opts.sandboxConfig, "sandbox-config", "", "Path to nsjail policy")
+cmd.PersistentFlags().StringVar(&opts.sandboxBin, "sandbox-bin", "", "Path to nsjail binary")
+cmd.PersistentFlags().StringArrayVar(&opts.sandboxBinds, "sandbox-bind", nil, "Additional bind mounts")
+cmd.PersistentFlags().BoolVar(&opts.sandboxBindHome, "sandbox-bind-home", false, "Bind-mount $HOME (use sparingly)")
+cmd.PersistentFlags().BoolVar(&opts.sandboxRequired, "sandbox", false, "Require sandbox; fail if unavailable")
+```
+
+The re‑exec happens right before BuildKit starts. ktl copies its own binary into the sandbox cache, binds context and cache, and launches nsjail:
+
+```go
+// internal/workflows/buildsvc/sandbox_linux.go
+guestContext := "/workspace"
+guestCache := "/ktl-cache"
+binds := buildSandboxBinds(contextAbs, guestContext, cacheDir, guestCache, builderAddr, opts.SandboxBindHome, homeDir, opts.SandboxBinds)
+
+args := []string{"--config", configPath, "--cwd", workdir}
+for _, b := range binds { args = append(args, b.flag, b.spec) }
+args = append(args, "--", sandboxExeGuest)
+args = append(args, os.Args[1:]...)
+
+sandboxCmd := exec.Command(bin, args...)
+sandboxCmd.Env = append(os.Environ(), "KTL_SANDBOX_ACTIVE=1", "KTL_SANDBOX_CONTEXT="+guestContext)
+```
+
+ktl is still evolving; today sandboxing is supported on Linux with nsjail installed. macOS runners skip the sandbox demos by design, and Windows support is on the roadmap but not ready. The patterns above stay the same: ship versioned policies, fail closed when nsjail is absent, and keep demos/tests alongside the code.
+
 ## CI recipes (copy/paste)
 ### GitHub Actions (self-hosted Linux runner)
 ```yaml
