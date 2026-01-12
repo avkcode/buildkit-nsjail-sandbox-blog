@@ -1,20 +1,27 @@
 # Putting nsjail in Front of BuildKit: a Practical Sandbox Pattern
 
-Dockerfiles are executable code. If you build untrusted inputs, every `RUN` step can read host files or poke local sockets—unless you fence it in. Here is a concise, reusable recipe for wrapping any BuildKit-based tool (Docker, `buildx`, `nerdctl build`, `ktl`, CI runners) in an nsjail sandbox so the build only sees what you allow.
+> TL;DR: BuildKit is great at building images, not at isolating your host from untrusted Dockerfiles. nsjail gives you namespaces, bind allowlists, and optional no‑egress networking. Re‑exec your build client inside nsjail, bind only context+cache, and you get a portable “fence” you can drop into Docker, buildx, nerdctl, buildctl, ktl, or your CI runners.
 
-## Why nsjail + BuildKit
-- **Process boundary**: PID/user namespaces stop build steps from assuming host root.
-- **Filesystem allowlist**: bind only context, cache, and intentional extras; everything else is tmpfs.
-- **Network control**: keep host networking for registries or flip to no-egress for hermetic builds.
-- **Drop-in**: BuildKit needs a filesystem and a builder socket; re-exec the client and you are done.
+## The threat model (why bother?)
+Dockerfiles are executable code. An untrusted `RUN` step can:
+- read SSH keys, cloud creds, kubeconfigs, npm tokens on the host;
+- talk to local sockets (`/var/run/docker.sock`, VM monitors, desktop agents);
+- phone home with whatever it finds.
+BuildKit itself does not block that—the client passes the build context and any bound sockets straight into the build env. If you build PRs from forks, OSS examples, or arbitrary customer bundles, you need a fence.
 
-## High-level flow
-1. Write or reuse an nsjail policy.
-2. Re-exec the build command inside nsjail with minimal binds.
-3. Pass stdin/stdout through so the build UI survives.
-4. Stream nsjail logs when debugging.
+## What nsjail adds on top of BuildKit
+- **Namespace cage**: new PID, user, UTS, IPC, and (optionally) net namespaces.
+- **Filesystem allowlist**: you decide exactly which host paths are visible; default everything else is tmpfs.
+- **Network dial**: keep host networking for registries, or flip to `clone_newnet: true` for no‑egress hermetic builds.
+- **Drop‑in**: you do not change BuildKit; you just re‑exec the build client inside nsjail with the right binds.
 
-## Minimal policy (linux-ci flavored)
+## Core pattern in three steps
+1. **Write a policy** (`sandbox/*.cfg`) that defines namespaces, tmpfs roots, and the specific binds you allow.
+2. **Wrap your build client** (Docker/buildx/nerdctl/buildctl/ktl) with a small launcher that re‑execs inside nsjail, mounting context, cache, and any required sockets.
+3. **Fail closed**: if nsjail is missing or the policy cannot be parsed, stop rather than silently running unsandboxed.
+
+## A minimal, portable policy (linux‑ci flavored)
+Save this as `sandbox/linux-ci.cfg` and version it with your code:
 ```cfg
 name: "buildkit-ci"
 hostname: "build"
@@ -25,7 +32,7 @@ clone_newipc: true
 clone_newpid: true
 clone_newuser: true
 clone_newcgroup: true
-clone_newnet: false    # set true for hermetic/no-egress builds
+clone_newnet: false        # set true for no-egress/hermetic builds
 keep_caps: false
 seccomp_string: "DEFAULT ALLOW"
 
@@ -40,64 +47,151 @@ mount { src: "/etc/ssl/certs" dst: "/etc/ssl/certs" is_bind: true }
 # Device passthrough for tooling
 mount { src: "/dev" dst: "/dev" is_bind: true rw: true }
 ```
-Save this as `sandbox/linux-ci.cfg`.
 
-## Wrap Docker Buildx / nerdctl / any client
-A tiny shim script can re-exec the tool inside nsjail. Drop this somewhere in `$PATH` (e.g., `bin/build-with-nsjail`):
+## Wrapper #1: Docker buildx (drop‑in for any repo)
+Create `bin/build-with-nsjail` and put it in PATH:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-POLICY=${POLICY_PATH:-$HOME/sandbox/linux-ci.cfg}
-BIN=${BIN:-buildx}          # docker buildx, nerdctl, or another wrapper
-CTX=${1:-.}
-shift || true
-
-# Resolve a cache dir that is safe to mount
+POLICY=${POLICY_PATH:-$PWD/sandbox/linux-ci.cfg}
+BIN=${BIN:-docker buildx}
+CTX=${1:-.}; shift || true
 CACHE=${CACHE_DIR:-$HOME/.cache/buildkit}
-mkdir -p "$CACHE"
-
-# Builder socket (docker daemon by default; swap for rootless/tcp builder as needed)
 BUILDER=${BUILDER_SOCKET:-/var/run/docker.sock}
-
+mkdir -p "$CACHE"
 exec nsjail \
   --config "$POLICY" \
   --bindmount "$PWD:/workspace" \
   --bindmount "$CACHE:/bk-cache" \
   --bindmount "$BUILDER:/var/run/docker.sock" \
   --cwd /workspace \
-  -- "$BIN" build "$CTX" --builder default "$@"
+  -- $BIN build "$CTX" --builder default "$@"
 ```
-Usage:
+Use it:
 ```bash
-POLICY_PATH=$PWD/sandbox/linux-ci.cfg BIN="docker buildx" \
-  ./bin/build-with-nsjail . -f Dockerfile.untrusted
+POLICY_PATH=$PWD/sandbox/linux-ci.cfg ./bin/build-with-nsjail . -f Dockerfile.untrusted
 ```
-Swap `--bindmount ... docker.sock` for a rootless BuildKit socket if you want to avoid exposing the Docker daemon.
+If you run rootless BuildKit or a TCP builder, swap the `--bindmount ... docker.sock` line accordingly.
 
-## Tightening the screws (hermetic builds)
-- Set `clone_newnet: true` and drop the Docker socket; talk to a rootless or remote BuildKit endpoint instead.
-- Prefer `buildctl` with an explicit endpoint to keep the surface smaller.
-- Use a separate cache directory per trust tier (`~/.cache/buildkit-untrusted`).
-
-## Probing visibility and debugging
-Quick check before risky builds:
+## Wrapper #2: buildctl (great for hermetic/rootless)
 ```bash
-HOST_MARKER=/etc/shadow
-nsjail --config sandbox/linux-ci.cfg -- \
-  /bin/sh -lc "stat $HOST_MARKER && echo visible" || echo hidden
+#!/usr/bin/env bash
+set -euo pipefail
+POLICY=${POLICY_PATH:-$PWD/sandbox/linux-ci.cfg}
+ENDPOINT=${ENDPOINT:-unix:///run/user/1000/buildkit/buildkitd.sock}
+CTX=${1:-.}; shift || true
+CACHE=${CACHE_DIR:-$HOME/.cache/buildkit}
+mkdir -p "$CACHE"
+exec nsjail \
+  --config "$POLICY" \
+  --bindmount "$PWD:/workspace" \
+  --bindmount "$CACHE:/bk-cache" \
+  --bindmount "${ENDPOINT#unix://}:${ENDPOINT#unix://}" \
+  --cwd /workspace \
+  -- buildctl --addr "$ENDPOINT" build --local context=. --local dockerfile=. "$@"
 ```
-For failures, add `--log /tmp/nsjail.log` and read the tail. If user namespaces are unsupported, drop `clone_newuser`; if seccomp blocks threads, keep `seccomp_string: "DEFAULT ALLOW"`.
+If you set `clone_newnet: true`, point `ENDPOINT` at a TCP listener on an allowlisted address or a loopback rootless daemon.
 
-## CI integration pattern
-1. Check in the policy under `sandbox/` and review it like code.
-2. Add a wrapper step before builds:
-   ```bash
-   POLICY_PATH=$PWD/sandbox/linux-ci.cfg BIN="docker buildx" ./bin/build-with-nsjail .
-   ```
-3. Fail the pipeline if nsjail is missing or the policy cannot be parsed; never silently fall back.
-4. Upload the nsjail log on failures.
+## Wrapper #3: nerdctl (containerd users)
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+POLICY=${POLICY_PATH:-$PWD/sandbox/linux-ci.cfg}
+CTX=${1:-.}; shift || true
+CACHE=${CACHE_DIR:-$HOME/.cache/buildkit}
+DAEMON=${DAEMON_SOCKET:-/run/containerd/containerd.sock}
+mkdir -p "$CACHE"
+exec nsjail \
+  --config "$POLICY" \
+  --bindmount "$PWD:/workspace" \
+  --bindmount "$CACHE:/bk-cache" \
+  --bindmount "$DAEMON:/run/containerd/containerd.sock" \
+  --cwd /workspace \
+  -- nerdctl build "$CTX" "$@"
+```
 
-## Takeaways
-- nsjail is a light, configurable cage for BuildKit clients: no daemon changes, just a re-exec.
-- Bind only context, cache, and required sockets; keep the rest on tmpfs.
-- Version policies and keep a demo script so teammates trust the isolation story.
+## Case study: ktl embeds this pattern
+The `ktl` CLI (BuildKit orchestrator) bakes the pattern in:
+- Flags: `--sandbox`, `--sandbox-config`, `--sandbox-bind`, `--sandbox-probe-path`, `--sandbox-logs`, `--hermetic` (`cmd/ktl/build.go`).
+- Launcher re‑exec: `internal/workflows/buildsvc/sandbox_linux.go` resolves policy, stages a copy of `ktl` inside the sandbox, binds context as `/workspace`, cache as `/ktl-cache`, builder socket, and any explicit binds.
+- Policies versioned under `sandbox/linux-ci.cfg` and `sandbox/linux-strict.cfg` with comments explaining namespace choices.
+- Demos: `scripts/sandbox-demo.sh` and `scripts/docker-vs-ktl-sandbox-demo.sh` show baseline vs sandboxed builds, allowlisting, and failure logging.
+Borrow the same structure for your own tool: flags to select policy/binds, re‑exec inside nsjail, and logging that fails closed.
+
+## CI recipes (copy/paste)
+### GitHub Actions (self-hosted Linux runner)
+```yaml
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nsjail
+        run: sudo apt-get update && sudo apt-get install -y nsjail
+      - name: Build with nsjail + buildx
+        run: |
+          POLICY_PATH=$PWD/sandbox/linux-ci.cfg \
+          BIN="docker buildx" \
+          ./bin/build-with-nsjail . -t ghcr.io/acme/app:pr-${{ github.sha }}
+```
+Fail the job if `nsjail` is missing; do not fallback.
+
+### GitLab CI
+```yaml
+stages: [build]
+build-image:
+  stage: build
+  tags: [linux]
+  script:
+    - apt-get update && apt-get install -y nsjail
+    - POLICY_PATH=$CI_PROJECT_DIR/sandbox/linux-ci.cfg BIN="docker buildx" ./bin/build-with-nsjail . -t registry.gitlab.com/acme/app:$CI_COMMIT_SHA
+  artifacts:
+    paths: [nsjail.log]
+```
+
+### Jenkins declarative
+```groovy
+pipeline {
+  agent { label 'linux' }
+  stages {
+    stage('build') {
+      steps {
+        sh 'sudo apt-get install -y nsjail'
+        sh 'POLICY_PATH=$WORKSPACE/sandbox/linux-ci.cfg BIN="docker buildx" ./bin/build-with-nsjail . -t registry.local/app:${BUILD_NUMBER}'
+      }
+    }
+  }
+}
+```
+
+## Hardening knobs
+- **Hermetic/no‑egress**: set `clone_newnet: true`; drop docker.sock; use rootless or remote BuildKit.
+- **Secrets hygiene**: prefer passing registry creds via `--secret` or build args; do not bind the full home directory. If unavoidable, bind only the needed file (`--bindmount $HOME/.docker/config.json:/workspace/.docker/config.json`).
+- **Per‑trust caches**: use separate caches for untrusted inputs (`~/.cache/buildkit-untrusted`).
+- **Probe before build**: run `nsjail ... stat /etc/shadow` to verify host paths are hidden.
+- **Log everything**: always set `--log` and keep artifacts so you can debug policy denials without rerunning unsandboxed.
+
+## Troubleshooting quick hits
+- `nsjail: CLONE_NEWUSER not permitted`: enable user namespaces on the host or drop `clone_newuser: true` (reduces isolation slightly).
+- Build fails with seccomp/thread errors: keep `seccomp_string: "DEFAULT ALLOW"` unless you ship a tailored profile.
+- Build cannot reach registry in hermetic mode: either allow egress selectively (add a veth or allowlisted socket) or stage base images in a local registry bound into the sandbox.
+- Docker socket missing: if you remove docker.sock (good), point BuildKit to a rootless or TCP endpoint instead.
+
+## Longer real-world scenarios
+- **Agency CI for customer projects**: run the wrapper with `clone_newnet: true`, per‑customer caches, and no docker.sock. Push images via a remote BuildKit endpoint behind an allowlist.
+- **Desktop contributor workflow**: developers keep the wrapper script in PATH; when reviewing PRs from forks, builds automatically enter nsjail with `--sandbox-logs` so policy errors are obvious.
+- **Supply-chain attestation**: combine nsjail with reproducible builds. Use the same policy in CI and on dev machines; if outputs diverge, you know it is not because of host leakage.
+
+## Why keep policies in git
+Policies are code. Reviewing `sandbox/*.cfg` alongside the app code makes the threat surface auditable. ktl ships `linux-ci` and `linux-strict` profiles in‑repo for exactly this reason; do the same for your tools.
+
+## Checklist to productionize
+- [ ] Policy lives under `sandbox/` and is reviewed like code.
+- [ ] Wrapper scripts fail if nsjail or the policy is missing.
+- [ ] CI jobs export logs on failure.
+- [ ] Separate caches for trusted vs untrusted inputs.
+- [ ] Optional hermetic mode tested (`clone_newnet: true`).
+- [ ] Docs include a one-liner to prove isolation (`stat /etc/shadow` should be hidden).
+
+## Closing
+BuildKit is a fantastic builder but it will happily show your host to any Dockerfile you hand it. Wrapping the build client in nsjail is a small amount of glue code plus a policy file, and it works the same for Docker, buildx, nerdctl, buildctl, ktl, or any bespoke CLI. Version the policy, keep the wrapper in PATH, fail closed, and you have a portable sandbox that lets you say “yes” to untrusted builds without risking the laptop or runner underneath.
