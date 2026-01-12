@@ -183,10 +183,12 @@ ktl (our in-progress BuildKit orchestrator) embeds nsjail by default on Linux: i
 **Local help + flags preview** (short clip):
 
 ![ktl sandbox demo](media/ktl-sandbox-demo.gif)
+*Shows the CLI flags and sandbox help text without running a full build; good for orienting teammates.*
 
 **Remote SSH build (Linux host, nsjail + BuildKit on the server):**
 
 ![ktl ssh sandboxed build](media/ktl-ssh-build.gif)
+*End-to-end sandboxed build of the `sandbox-strict` fixture over SSH with nsjail enforcing the policy server-side.*
 
 ### Other ktl build surfaces to try locally (macOS ok)
 
