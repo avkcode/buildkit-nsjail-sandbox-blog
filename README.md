@@ -178,6 +178,16 @@ sandboxCmd.Env = append(os.Environ(), "KTL_SANDBOX_ACTIVE=1", "KTL_SANDBOX_CONTE
 
 ktl is still evolving; today sandboxing is supported on Linux with nsjail installed. macOS runners skip the sandbox demos by design, and Windows support is on the roadmap but not ready. The patterns above stay the same: ship versioned policies, fail closed when nsjail is absent, and keep demos/tests alongside the code.
 
+### Demo video (ktl + BuildKit + nsjail)
+
+Place your captured run at `media/ktl-sandbox-demo.mov` (convert to `.mp4` if you prefer). GitHub will render inline playback for MOV/MP4 stored in the repo. The embed below will start working once the file is added:
+
+```html
+<video controls width="960" src="media/ktl-sandbox-demo.mov">
+  Your browser does not support the video tag.
+</video>
+```
+
 ## CI recipes (copy/paste)
 ### GitHub Actions (self-hosted Linux runner)
 ```yaml
