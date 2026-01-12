@@ -122,9 +122,9 @@ Borrow the same structure for your own tool: flags to select policy/binds, re‑
 
 ```mermaid
 flowchart LR
-  Dev["developer shell\n(docker/buildx/nerdctl/ktl)"] --> |wrapper script| J["nsjail\n(policy + binds)"]
-  J --> |binds /workspace| BK["BuildKit daemon\n(rootless or docker.sock)"]
-  BK --> |pull/push| Reg["registry"]
+  Dev["developer shell\n(docker/buildx/nerdctl/ktl)"] -->|wrapper script| J["nsjail\n(policy + binds)"]
+  J -->|binds /workspace| BK["BuildKit daemon\n(rootless or docker.sock)"]
+  BK -->|pull/push| Reg["registry"]
   BK --> Img["image / cache output"]
   J -. sandbox logs .-> Dev
 ```
@@ -133,7 +133,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-  subgraph NsJail "nsjail view (/)"
+  subgraph NsJail["nsjail view (/)"]
     TMP["/tmp (tmpfs)"]
     RUN["/run (tmpfs)"]
     WS["/workspace (bind: host pwd)"]
