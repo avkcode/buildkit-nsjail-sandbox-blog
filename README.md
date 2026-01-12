@@ -188,6 +188,17 @@ ktl (our in-progress BuildKit orchestrator) embeds nsjail by default on Linux: i
 
 ![ktl ssh sandboxed build](media/ktl-ssh-build.gif)
 
+### Other ktl build surfaces to try locally (macOS ok)
+
+- **Hermetic, no egress:** `ktl build . --hermetic --sandbox-config sandbox/linux-ci.cfg --sandbox --sandbox-logs`  
+  Uses the embedded `ktl-hermetic.cfg` (no network) when `--hermetic` is set. On macOS it will fall back gracefully if nsjail is unavailable.
+- **Probe before build:** `ktl build . --sandbox --sandbox-config sandbox/linux-ci.cfg --sandbox-probe-path /etc/shadow --sandbox-logs`  
+  Prints whether the host path is visible before starting BuildKit; handy for verifying policy changes.
+- **Selective home bind:** `ktl build . --sandbox --sandbox-config sandbox/linux-ci.cfg --sandbox-bind $HOME/.docker/config.json:/workspace/.docker/config.json`  
+  Showcases allowlisting a single credential file instead of mounting your whole home.
+- **Log streaming:** `ktl build . --sandbox --sandbox-config sandbox/linux-ci.cfg --sandbox-logs --output logs`  
+  Streams nsjail runtime logs alongside BuildKit output; useful when policies block something unexpectedly.
+
 ## CI recipes (copy/paste)
 ### GitHub Actions (self-hosted Linux runner)
 ```yaml
