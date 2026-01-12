@@ -178,9 +178,15 @@ sandboxCmd.Env = append(os.Environ(), "KTL_SANDBOX_ACTIVE=1", "KTL_SANDBOX_CONTE
 
 ktl is still evolving; today sandboxing is supported on Linux with nsjail installed. macOS runners skip the sandbox demos by design, and Windows support is on the roadmap but not ready. The patterns above stay the same: ship versioned policies, fail closed when nsjail is absent, and keep demos/tests alongside the code.
 
-### Demo (GIF, recorded with VHS)
+ktl (our in-progress BuildKit orchestrator) embeds nsjail by default on Linux: it re-execs itself inside the sandbox, binds only the build context/cache/builder socket, and fails closed if nsjail or the policy is missing.
+
+**Local help + flags preview** (short clip):
 
 ![ktl sandbox demo](media/ktl-sandbox-demo.gif)
+
+**Real project run (`/Users/antonkrylov/work/sites/energy-lab`, Linux host):**
+
+![ktl energy-lab demo](media/ktl-nsjail-energy.gif)
 
 ## CI recipes (copy/paste)
 ### GitHub Actions (self-hosted Linux runner)
